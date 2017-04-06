@@ -2,6 +2,9 @@ from __future__ import division
 
 import tensorflow as tf
 import numpy as np
+import scipy as sp
+import scipy.misc
+
 
 def create_adam_optimizer(learning_rate, momentum):
     return tf.train.AdamOptimizer(learning_rate=learning_rate,
@@ -87,15 +90,7 @@ def mu_law_decode(output, quantization_channels):
         return tf.sign(signal) * magnitude
 
 def upsample_labels(labels, num_samples):
-    label_size = len(labels)
-    label_channel_size = len(labels[0])
-    ratio = num_samples//label_size
-    upsampled_labels = []
-    for label in labels:
-        upsampled_labels += np.repeat([label], ratio, axis=0).tolist()
-    upsampled_len = len(upsampled_labels)
-    if upsampled_len < num_samples:
-        upsampled_labels += np.repeat([labels[-1]], num_samples-upsampled_len, axis=0).tolist()
-    upsampled_labels = np.array(upsampled_labels, dtype=np.float32)
-    upsampled_labels = np.resize(upsampled_labels, [np.shape(upsampled_labels)[0], label_channel_size])
-    return upsampled_labels
+    labels = np.array(labels)
+    label_size, label_channel_size = labels.shape
+    return sp.misc.imresize(labels, (num_samples,label_channel_size)).tolist()
+

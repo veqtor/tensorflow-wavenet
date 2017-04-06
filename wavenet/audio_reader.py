@@ -12,6 +12,9 @@ import tensorflow as tf
 from .ops import upsample_labels
 
 FILE_PATTERN = r'p([0-9]+)_([0-9]+)\.wav'
+window = 256
+
+sample_chunk = 2000
 
 
 def get_category_cardinality(files):
@@ -36,13 +39,24 @@ def randomize_files(files):
 
 
 def find_files(directory, pattern='*.wav'):
-    '''Recursively finds all files matching the pattern.'''
+    '''Recursively finds aLl files matching the pattern.'''
     files = []
     for root, dirnames, filenames in os.walk(directory):
-        for filename in fnmatch.filter(filenames, pattern):
-            files.append(os.path.join(root, filename))
+        for pattern in ['*.wav', '*.mp3', '*.aiff', '*.flac', '*.ape']:
+            for filename in fnmatch.filter(filenames, pattern):
+                files.append(os.path.join(root, filename))
+    print("found %d files"%len(files))
     return files
 
+def getMFCCFromAudio(audio, sample_rate, lc_channels):
+    print('calculating stft...')
+    D = librosa.stft(audio, n_fft=window, hop_length=32)
+    print('calculating mfcc...')
+    melSpecs = librosa.feature.melspectrogram(S=D, n_mels=lc_channels)
+    print('calculating magphase...')
+    S, phase = librosa.magphase(melSpecs)
+    print('calulation done, swapaxes...')
+    return np.swapaxes(S,0,1)
 
 def load_generic_audio(directory, sample_rate):
     '''Generator that yields audio waveforms from the directory.'''
@@ -145,12 +159,12 @@ class AudioReader(object):
         if self.gc_enabled and not_all_have_id(files):
             raise ValueError("Global conditioning is enabled, but file names "
                              "do not conform to pattern having id.")
-        if self.lc_channels:
-            label_files = find_files(audio_dir, "*.json")
-            self.lc_label_files = label_files
-            if not_all_have_label_file(files, label_files):
-                raise ValueError("Local conditioning is enabled but wav files do not have "
-                                 "do not have corresponding JSON label files.")
+        #if self.lc_channels:
+        #    label_files = find_files(audio_dir, "*.json")
+        #    self.lc_label_files = label_files
+        #    if not_all_have_label_file(files, label_files):
+        #        raise ValueError("Local conditioning is enabled but wav files do not have "
+        #                         "do not have corresponding JSON label files.")
 
         # Determine the number of mutually-exclusive categories we will
         # accomodate in our embedding table.
@@ -204,8 +218,10 @@ class AudioReader(object):
                                'constant')
 
                 if self.lc_channels:
+                    print('upsampling labels...')
                     upsampled_labels = upsample_labels(labels, original_audio_size)
                     upsampled_labels = np.pad(upsampled_labels, [[self.receptive_field, 0], [0, 0]], 'edge')
+                    print('done upsampling')
 
                 if self.sample_size:
                     # Cut samples into pieces of size receptive_field +
