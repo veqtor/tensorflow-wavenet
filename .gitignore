@@ -2,3 +2,11 @@ logdir/
 VCTK-Corpus/
 *.pyc
 
+*.meta
+*.data-00000-of-00001
+*.index
+*.MacBook-Pro.local
+*.ipynb
+*.zip
+checkpoint
+*.pkl
