@@ -9,6 +9,7 @@ import os
 
 import librosa
 import numpy as np
+import pandas as pd
 import tensorflow as tf
 
 from wavenet import WaveNetModel, mu_law_decode, mu_law_encode, audio_reader, upsample_labels
@@ -122,6 +123,15 @@ def write_wav(waveform, sample_rate, filename):
     librosa.output.write_wav(filename, y, sample_rate)
     print('Updated wav file at {}'.format(filename))
 
+def write_pickle(samples, filename, receptive_field_length):
+    y = np.reshape(samples, [-1,256])
+    y = y[receptive_field_length:]
+    length = y.shape[0]
+    df = pd.DataFrame(data=y[0:,0:])
+    rng = pd.date_range('1/1/2011', periods=len(y), freq=str(32) + 'L')
+    df.index = df.index.map(lambda x: rng[x])
+    print(df.tail())
+    df.to_pickle(filename)
 
 def create_seed(filename,
                 sample_rate,
@@ -156,6 +166,8 @@ def main():
 
     sess = tf.Session()
 
+    quantization_channels = wavenet_params['quantization_channels']
+
     net = WaveNetModel(
         batch_size=1,
         dilations=wavenet_params['dilations'],
@@ -171,7 +183,7 @@ def main():
         global_condition_cardinality=args.gc_cardinality,
         local_condition_channels=lc_channels)
 
-    samples = tf.placeholder(tf.int32)
+    samples = tf.placeholder(dtype=tf.float32, shape=(None, quantization_channels))
     sample_labels = tf.placeholder(tf.float32)
 
     if args.fast_generation:
@@ -191,9 +203,9 @@ def main():
     print('Restoring model from {}'.format(args.checkpoint))
     saver.restore(sess, args.checkpoint)
 
-    decode = mu_law_decode(samples, wavenet_params['quantization_channels'])
+    #decode = mu_law_decode(samples, wavenet_params['quantization_channels'])
 
-    quantization_channels = wavenet_params['quantization_channels']
+    #quantization_channels = wavenet_params['quantization_channels']
     if args.wav_seed:
         seed = create_seed(args.wav_seed,
                            wavenet_params['sample_rate'],
@@ -202,8 +214,8 @@ def main():
         waveform = sess.run(seed).tolist()
     else:
         # Silence with a single random sample at the end.
-        waveform = [quantization_channels / 2] * (net.receptive_field - 1)
-        waveform.append(np.random.randint(quantization_channels))
+        waveform = np.zeros((net.receptive_field - 1, 256))
+        waveform = np.concatenate((waveform, np.random.rand(1,quantization_channels)*10000))
 
     if args.fast_generation and args.wav_seed:
         # When using the incremental generation, we need to
@@ -228,7 +240,7 @@ def main():
         if args.fast_generation:
             outputs = [next_sample]
             outputs.extend(net.push_ops)
-            window = waveform[-1]
+            window = np.reshape(waveform[-1],(-1,256))
             if lc_channels is not None:
                 label_window = upsampled_labels[step]
         else:
@@ -247,24 +259,24 @@ def main():
         prediction = sess.run(outputs, feed_dict={samples: window, sample_labels: label_window})[0]
 
         # Scale prediction distribution using temperature.
-        np.seterr(divide='ignore')
-        scaled_prediction = np.log(prediction) / args.temperature
-        scaled_prediction = (scaled_prediction -
-                             np.logaddexp.reduce(scaled_prediction))
-        scaled_prediction = np.exp(scaled_prediction)
-        np.seterr(divide='warn')
+        #np.seterr(divide='ignore')
+        #scaled_prediction = np.log(prediction) / args.temperature
+        #scaled_prediction = (scaled_prediction -
+        #                     np.logaddexp.reduce(scaled_prediction))
+        #scaled_prediction = np.exp(scaled_prediction)
+        #np.seterr(divide='warn')
 
         # Prediction distribution at temperature=1.0 should be unchanged after
         # scaling.
-        if args.temperature == 1.0:
-            np.testing.assert_allclose(
-                    prediction, scaled_prediction, atol=1e-5,
-                    err_msg='Prediction scaling at temperature=1.0 '
-                            'is not working as intended.')
+        #if args.temperature == 1.0:
+        #    np.testing.assert_allclose(
+        #            prediction, scaled_prediction, atol=1e-5,
+        #            err_msg='Prediction scaling at temperature=1.0 '
+        #                    'is not working as intended.')
 
-        sample = np.random.choice(
-            np.arange(quantization_channels), p=scaled_prediction)
-        waveform.append(sample)
+        #sample = np.random.choice(
+        #    np.arange(quantization_channels), p=scaled_prediction)
+        waveform = np.concatenate((waveform, np.atleast_2d(prediction)))
 
         # Show progress only once per second.
         current_sample_timestamp = datetime.now()
@@ -277,8 +289,8 @@ def main():
         # If we have partial writing, save the result so far.
         if (args.wav_out_path and args.save_every and
                 (step + 1) % args.save_every == 0):
-            out = sess.run(decode, feed_dict={samples: waveform})
-            write_wav(out, wavenet_params['sample_rate'], args.wav_out_path)
+            out = sess.run(samples, feed_dict={samples: waveform})
+            write_pickle(out, args.wav_out_path, net.receptive_field)
 
     # Introduce a newline to clear the carriage return from the progress.
     print()
@@ -286,7 +298,7 @@ def main():
     # Save the result as an audio summary.
     datestring = str(datetime.now()).replace(' ', 'T')
     writer = tf.train.SummaryWriter(logdir)
-    tf.audio_summary('generated', decode, wavenet_params['sample_rate'])
+    tf.audio_summary('generated', samples, wavenet_params['sample_rate'])
     summaries = tf.merge_all_summaries()
     summary_out = sess.run(summaries,
                            feed_dict={samples: np.reshape(waveform, [-1, 1])})
@@ -294,7 +306,7 @@ def main():
 
     # Save the result as a wav file.
     if args.wav_out_path:
-        out = sess.run(decode, feed_dict={samples: waveform})
+        out = sess.run(samples, feed_dict={samples: waveform})
         write_wav(out, wavenet_params['sample_rate'], args.wav_out_path)
 
     print('Finished generating. The result can be viewed in TensorBoard.')

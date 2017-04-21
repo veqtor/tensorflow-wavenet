@@ -418,7 +418,7 @@ class WaveNetModel(object):
             output_gate += tf.matmul(global_condition_batch,
                                      weights_gc_gate)
 
-        if local_condition_batch is not None:
+        if local_condition_batch is not None and self.local_condition_channels is not None:
             weights_lc_filter = variables['lc_filter']
             weights_lc_filter = weights_lc_filter[0, :, :]
             output_filter += tf.matmul(local_condition_batch, weights_lc_filter)
@@ -451,10 +451,7 @@ class WaveNetModel(object):
         current_layer = input_batch
 
         # Pre-process the input with a regular convolution
-        if self.scalar_input:
-            initial_channels = 1
-        else:
-            initial_channels = self.quantization_channels
+        initial_channels = self.quantization_channels
 
         current_layer = self._create_causal_layer(current_layer)
 
@@ -631,21 +628,17 @@ class WaveNetModel(object):
         If you want to generate audio by feeding the output of the network back
         as an input, see predict_proba_incremental for a faster alternative.'''
         with tf.name_scope(name):
-            if self.scalar_input:
-                encoded = tf.cast(waveform, tf.float32)
-                encoded = tf.reshape(encoded, [-1, 1])
-            else:
-                encoded = self._one_hot(waveform)
+            encoded = tf.cast(waveform, tf.float32)
 
             gc_embedding = self._embed_gc(global_condition)
             raw_output = self._create_network(encoded, gc_embedding, local_condition)
             out = tf.reshape(raw_output, [-1, self.quantization_channels])
             # Cast to float64 to avoid bug in TensorFlow
-            proba = tf.cast(
-                tf.nn.softmax(tf.cast(out, tf.float64)), tf.float32)
+            ##proba = tf.cast(
+            ##    tf.nn.softmax(tf.cast(out, tf.float64)), tf.float32)
             last = tf.slice(
-                proba,
-                [tf.shape(proba)[0] - 1, 0],
+                raw_output,
+                [tf.shape(raw_output)[0] - 1, 0],
                 [1, self.quantization_channels])
             return tf.reshape(last, [-1])
 
@@ -654,26 +647,30 @@ class WaveNetModel(object):
         '''Computes the probability distribution of the next sample
         incrementally, based on a single sample and all previously passed
         samples.'''
-        if self.filter_width > 2:
-            raise NotImplementedError("Incremental generation does not "
-                                      "support filter_width > 2.")
-        if self.scalar_input:
-            raise NotImplementedError("Incremental generation does not "
-                                      "support scalar input yet.")
+        #if self.filter_width > 2:
+        #    raise NotImplementedError("Incremental generation does not "
+        #                              "support filter_width > 2.")
+        #if self.scalar_input:
+        #    raise NotImplementedError("Incremental generation does not "
+        #                              "support scalar input yet.")
         with tf.name_scope(name):
-            encoded = tf.one_hot(waveform, self.quantization_channels)
-            encoded = tf.reshape(encoded, [-1, self.quantization_channels])
-            local_condition = tf.reshape(local_condition, [-1, self.local_condition_channels])
+            #encoded = tf.one_hot(waveform, self.quantization_channels)
+            #encoded = tf.reshape(encoded, [-1, self.quantization_channels])
+            if self.local_condition_channels is not None:
+                local_condition = tf.reshape(local_condition, [-1, self.local_condition_channels])
             gc_embedding = self._embed_gc(global_condition)
-            raw_output = self._create_generator(encoded, gc_embedding, local_condition)
+            raw_output = self._create_generator(waveform, gc_embedding, local_condition)
             out = tf.reshape(raw_output, [-1, self.quantization_channels])
-            proba = tf.cast(
-                tf.nn.softmax(tf.cast(out, tf.float64)), tf.float32)
+            ##proba = tf.cast(
+            ##    tf.nn.softmax(tf.cast(out, tf.float64)), tf.float32)
             last = tf.slice(
-                proba,
-                [tf.shape(proba)[0] - 1, 0],
+                out,
+                [tf.shape(out)[0] - 1, 0],
                 [1, self.quantization_channels])
             return tf.reshape(last, [-1])
+
+    def get_linear_loss(self, logits, labels):
+        return tf.pow(logits-labels, 2)
 
     def loss(self,
              input_batch,
@@ -687,18 +684,20 @@ class WaveNetModel(object):
         '''
         with tf.name_scope(name):
             # We mu-law encode and quantize the input audioform.
-            encoded_input = mu_law_encode(input_batch,
-                                          self.quantization_channels)
+            #encoded_input = mu_law_encode(input_batch,
+            #                              self.quantization_channels)
 
             gc_embedding = self._embed_gc(global_condition_batch)
 
-            encoded = self._one_hot(encoded_input)
-            if self.scalar_input:
-                network_input = tf.reshape(
-                    tf.cast(input_batch, tf.float32),
-                    [self.batch_size, -1, 1])
-            else:
-                network_input = encoded
+            shape = [self.batch_size, -1, self.quantization_channels]
+            #encoded =
+            encoded = tf.reshape(
+                tf.cast(input_batch, tf.float32),
+                [self.batch_size, -1, self.quantization_channels])
+            #if self.scalar_input:
+            network_input = encoded
+            #else:
+            #    network_input = encoded
 
             # Cut off the last sample of network input to preserve causality.
             network_input_width = tf.shape(network_input)[1] - 1
@@ -710,19 +709,17 @@ class WaveNetModel(object):
             with tf.name_scope('loss'):
                 # Cut off the samples corresponding to the receptive field
                 # for the first predicted sample.
-                target_output = tf.slice(
-                    tf.reshape(
+                target_output = tf.reshape(
                         encoded,
-                        [self.batch_size, -1, self.quantization_channels]),
+                        [self.batch_size, -1, self.quantization_channels])
+                target_output = tf.slice(target_output,
                     [0, self.receptive_field, 0],
                     [-1, -1, -1])
                 target_output = tf.reshape(target_output,
                                            [-1, self.quantization_channels])
                 prediction = tf.reshape(raw_output,
                                         [-1, self.quantization_channels])
-                loss = tf.nn.softmax_cross_entropy_with_logits(
-                    prediction,
-                    target_output)
+                loss = self.get_linear_loss(logits=prediction, labels=target_output)
                 reduced_loss = tf.reduce_mean(loss)
 
                 tf.summary.scalar('loss', reduced_loss)
