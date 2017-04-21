@@ -9,7 +9,7 @@ import librosa
 import numpy as np
 import tensorflow as tf
 
-from .ops import upsample_labels
+from .ops import upsample_labels, mu_law_encode
 
 FILE_PATTERN = r'p([0-9]+)_([0-9]+)\.wav'
 window = 256
@@ -48,20 +48,9 @@ def find_files(directory, pattern='*.wav'):
     print("found %d files"%len(files))
     return files
 
-def getMFCCFromAudio(audio, sample_rate, lc_channels):
-    print('calculating stft...')
-    D = librosa.stft(audio, n_fft=window, hop_length=32)
-    print('calculating mfcc...')
-    melSpecs = librosa.feature.melspectrogram(S=D, n_mels=lc_channels)
-    print('calculating magphase...')
-    S, phase = librosa.magphase(melSpecs)
-    print('calulation done, swapaxes...')
-    return np.swapaxes(S,0,1)
-
 def load_generic_audio(directory, sample_rate):
     '''Generator that yields audio waveforms from the directory.'''
     files = find_files(directory)
-    label_files = find_files(directory, "*.json")
     id_reg_exp = re.compile(FILE_PATTERN)
     print("files length: {}".format(len(files)))
     randomized_files = randomize_files(files)
@@ -75,15 +64,12 @@ def load_generic_audio(directory, sample_rate):
             # The file name matches the pattern for containing ids.
             category_id = int(ids[0][0])
 
-        if label_files:
-            with open("./%s.json" % ''.join(filename.split('.')[:-1]), 'r') as f:
-                labels = json.loads(f.read())
-        else:
-            labels = None
-
-        audio, _ = librosa.load(filename, sr=sample_rate, mono=True)
-        audio = audio.reshape(-1, 1)
-        yield audio, filename, category_id, labels
+        audio, _ = librosa.load(filename, sr=sample_rate, mono=False)
+        mid = (audio[0] + audio[1]) / 2
+        side = (audio[0] - audio[1])/2
+        mid = mid.reshape(-1, 1)
+        side = side.reshape(-1, 1)
+        yield side, filename, category_id, mid
 
 
 def trim_silence(audio, threshold):
@@ -216,12 +202,11 @@ class AudioReader(object):
 
                 audio = np.pad(audio, [[self.receptive_field, 0], [0, 0]],
                                'constant')
+                labels = np.pad(labels, [[self.receptive_field, 0], [0, 0]],
+                               'constant')
 
                 if self.lc_channels:
-                    print('upsampling labels...')
-                    upsampled_labels = upsample_labels(labels, original_audio_size)
-                    upsampled_labels = np.pad(upsampled_labels, [[self.receptive_field, 0], [0, 0]], 'edge')
-                    print('done upsampling')
+                    labels = mu_law_encode(labels, self.lc_channels)
 
                 if self.sample_size:
                     # Cut samples into pieces of size receptive_field +
@@ -236,9 +221,9 @@ class AudioReader(object):
                             sess.run(self.gc_enqueue, feed_dict={
                                 self.id_placeholder: category_id})
                         if self.lc_channels:
-                            label_slice = upsampled_labels[:(self.receptive_field +
+                            label_slice = labels[:(self.receptive_field +
                                             self.sample_size), :]
-                            upsampled_labels = upsampled_labels[self.sample_size:, :]
+                            labels = labels[self.sample_size:, :]
                             sess.run(self.lc_enqueue, feed_dict={self.lc_placeholder: label_slice})
                 else:
                     sess.run(self.enqueue,
@@ -247,7 +232,7 @@ class AudioReader(object):
                         sess.run(self.gc_enqueue,
                                  feed_dict={self.id_placeholder: category_id})
                     if self.lc_channels:
-                        sess.run(self.lc_enqueue, feed_dict={self.lc_placeholder: upsampled_labels})
+                        sess.run(self.lc_enqueue, feed_dict={self.lc_placeholder: labels})
 
     def start_threads(self, sess, n_threads=1):
         for _ in range(n_threads):

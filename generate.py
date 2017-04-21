@@ -87,6 +87,12 @@ def get_arguments():
         help='Number of global condition embedding channels. Omit if no '
              'global conditioning.')
     parser.add_argument(
+        '--lc_channels',
+        type=int,
+        default=256,
+        help='Number of local condition embedding channels. Omit if no '
+             'local conditioning.')
+    parser.add_argument(
         '--gc_cardinality',
         type=int,
         default=None,
@@ -149,10 +155,9 @@ def main():
     lc_channels = None
     upsampled_labels = None
     if args.lc_label_file:
-        with open(args.lc_label_file, 'r') as f:
-            labels = json.loads(f.read())
-        lc_channels = len(labels[0])
-        upsampled_labels = upsample_labels(labels, args.samples)
+        labels = librosa.load(args.lc_label_file, sr=wavenet_params['sample_rate'], mono=True)
+        lc_channels = args.lc_channels
+        upsampled_labels = mu_law_encode(labels, lc_channels)
 
     sess = tf.Session()
 
