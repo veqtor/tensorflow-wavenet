@@ -105,6 +105,7 @@ class WaveNetModel(object):
         self.dilation_channels = dilation_channels
         self.quantization_channels = quantization_channels
         self.use_biases = use_biases
+        self.causal_dilated_local_condition = True
         self.skip_channels = skip_channels
         self.scalar_input = scalar_input
         self.initial_filter_width = initial_filter_width
@@ -213,6 +214,17 @@ class WaveNetModel(object):
                                 [1,
                                  self.local_condition_channels,
                                  self.dilation_channels])
+                            if self.causal_dilated_local_condition:
+                                current['cdlc_filter'] = create_variable(
+                                    'cdlc_filter',
+                                    [self.filter_width,
+                                     self.local_condition_channels,
+                                     self.dilation_channels])
+                                current['cdlc_gate'] = create_variable(
+                                    'cdlc_gate',
+                                    [self.filter_width,
+                                     self.local_condition_channels,
+                                     self.dilation_channels])
 
                         if self.use_biases:
                             current['filter_bias'] = create_bias_variable(
@@ -334,6 +346,21 @@ class WaveNetModel(object):
                 [0, tf.shape(lc_gate_output)[1] - tf.shape(conv_gate)[1],0],
                 [-1,-1,-1]
             )
+            if self.causal_dilated_local_condition:
+                weights_cdlc_filter = variables['cdlc_filter']
+                weights_cdlc_gate = variables['cdlc_gate']
+                cdlc_conv_filter = causal_conv(local_condition_batch, weights_cdlc_filter, dilation)
+                cdlc_conv_gate = causal_conv(local_condition_batch, weights_cdlc_gate, dilation)
+                conv_filter = conv_filter + tf.slice(
+                    cdlc_conv_filter,
+                    [0, tf.shape(cdlc_conv_filter)[1] - tf.shape(conv_filter)[1], 0],
+                    [-1, -1, -1]
+                )
+                conv_gate = conv_gate + tf.slice(
+                    cdlc_conv_gate,
+                    [0, tf.shape(cdlc_conv_gate)[1] - tf.shape(conv_gate)[1], 0],
+                    [-1, -1, -1]
+                )
 
         if self.use_biases:
             filter_bias = variables['filter_bias']
@@ -637,8 +664,10 @@ class WaveNetModel(object):
             else:
                 encoded = self._one_hot(waveform)
 
+            local_condition_encoded = self._one_hot(local_condition)
+
             gc_embedding = self._embed_gc(global_condition)
-            raw_output = self._create_network(encoded, gc_embedding, local_condition)
+            raw_output = self._create_network(encoded, gc_embedding, local_condition_encoded)
             out = tf.reshape(raw_output, [-1, self.quantization_channels])
             # Cast to float64 to avoid bug in TensorFlow
             proba = tf.cast(
@@ -663,9 +692,10 @@ class WaveNetModel(object):
         with tf.name_scope(name):
             encoded = tf.one_hot(waveform, self.quantization_channels)
             encoded = tf.reshape(encoded, [-1, self.quantization_channels])
-            local_condition = tf.reshape(local_condition, [-1, self.local_condition_channels])
+            encoded_lc = tf.one_hot(local_condition, self.local_condition_channels)
+            encoded_lc = tf.reshape(encoded_lc, [-1, self.local_condition_channels])
             gc_embedding = self._embed_gc(global_condition)
-            raw_output = self._create_generator(encoded, gc_embedding, local_condition)
+            raw_output = self._create_generator(encoded, gc_embedding, encoded_lc)
             out = tf.reshape(raw_output, [-1, self.quantization_channels])
             proba = tf.cast(
                 tf.nn.softmax(tf.cast(out, tf.float64)), tf.float32)
@@ -690,9 +720,13 @@ class WaveNetModel(object):
             encoded_input = mu_law_encode(input_batch,
                                           self.quantization_channels)
 
+            encoded_lc = mu_law_encode(local_condition_batch,
+                                          self.local_condition_channels)
+
             gc_embedding = self._embed_gc(global_condition_batch)
 
             encoded = self._one_hot(encoded_input)
+            encoded_lc_oh = self._one_hot(encoded_lc)
             if self.scalar_input:
                 network_input = tf.reshape(
                     tf.cast(input_batch, tf.float32),
@@ -705,7 +739,7 @@ class WaveNetModel(object):
             network_input = tf.slice(network_input, [0, 0, 0],
                                      [-1, network_input_width, -1])
 
-            raw_output = self._create_network(network_input, gc_embedding, local_condition_batch)
+            raw_output = self._create_network(network_input, gc_embedding, encoded_lc_oh)
 
             with tf.name_scope('loss'):
                 # Cut off the samples corresponding to the receptive field

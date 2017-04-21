@@ -131,9 +131,9 @@ class AudioReader(object):
             self.gc_enqueue = self.gc_queue.enqueue([self.id_placeholder])
 
         if self.lc_channels:
-            self.lc_placeholder = tf.placeholder(dtype=tf.float32, shape=(None, self.lc_channels))
+            self.lc_placeholder = tf.placeholder(dtype=tf.float32, shape=(None, 1))
             self.lc_queue = tf.PaddingFIFOQueue(queue_size, ['float32'],
-                                                shapes=[(None, self.lc_channels)])
+                                                shapes=[(None, 1)])
             self.lc_enqueue = self.lc_queue.enqueue([self.lc_placeholder])
 
         # TODO Find a better way to check this.
@@ -204,9 +204,6 @@ class AudioReader(object):
                                'constant')
                 labels = np.pad(labels, [[self.receptive_field, 0], [0, 0]],
                                'constant')
-
-                if self.lc_channels:
-                    labels = mu_law_encode(labels, self.lc_channels)
 
                 if self.sample_size:
                     # Cut samples into pieces of size receptive_field +
