@@ -2,3 +2,12 @@ logdir/
 VCTK-Corpus/
 *.pyc
 
+*checkpoint.ipynb
+*.zip
+Untitled.ipynb
+checkpoint
+events.out.tfevents.*
+*.data-00000-of-00001
+model.ckpt*.index
+model.ckpt-*.meta
+*.pkl
